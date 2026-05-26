@@ -1,20 +1,55 @@
-# Seus dados pessoais
-FormData(
-    nome      = "Meu nome",
-    sobrenome = "Meu sobrenome",
-    whatsapp  = "79999999999",
-    turma     = "OSWALDO CRUZ",
-    cabine    = "16",
-)
+"""
+config.py — Todas as configurações do projeto em um único lugar.
+Edite apenas este arquivo para personalizar o comportamento do script.
+"""
 
-# WhatsApp
-WhatsAppConfig(
-    grupo       = "Nome Exato do Grupo",  # ← copie do WhatsApp
-    hora_inicio = "12:40",
-    hora_fim    = "13:10",
-)
+from dataclasses import dataclass
 
-# Modo de operação
-AppConfig(
-    apenas_preencher = False,  # False = envia de verdade
-)
+
+@dataclass(frozen=True)
+class FormData:
+    """Dados pessoais para preenchimento do formulário."""
+    nome: str      = "Nome"
+    sobrenome: str = "Sobrenome"
+    whatsapp: str  = "7999999999"
+    turma: str     = "OS 01"
+    cabine: str    = "16"
+
+    # Lista de cabines de fallback: se a cabine principal não estiver
+    # disponível no dropdown, tenta as seguintes em ordem.
+    cabines_fallback: tuple[str, ...] = ("15", "17", "18", "14")
+
+
+@dataclass(frozen=True)
+class WhatsAppConfig:
+    """Configurações do monitoramento do WhatsApp Web."""
+    grupo: str            = "TURMA 01"  # <- nome EXATO do grupo
+    hora_inicio: str      = "12:45"
+    hora_fim: str         = "13:10"
+    session_dir: str      = "./whatsapp_session"
+    intervalo_scan: float = 3.0    # segundos entre verificações
+    login_timeout: int    = 180    # segundos aguardando login (QR Code ou número de telefone)
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    """Configurações de retry e tolerância a falhas."""
+    max_tentativas_envio: int  = 3      # tentativas de clicar em Enviar
+    timeout_campo: int         = 5      # segundos aguardando cada campo aparecer
+    timeout_formulario: int    = 20     # segundos para o Forms carregar
+    salvar_screenshot: bool    = True   # salva print em caso de erro
+    screenshot_dir: str        = "./screenshots"
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    """Configurações gerais da aplicação."""
+    # True  = preenche mas NÃO envia (modo teste)
+    # False = preenche e ENVIA de verdade
+    apenas_preencher: bool = True
+
+# ── Instâncias prontas para importar ──────────────────────────────────────────
+form_data    = FormData()
+whatsapp_cfg = WhatsAppConfig()
+retry_cfg    = RetryConfig()
+app_cfg      = AppConfig()

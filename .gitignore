@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Editor settings
+.vscode/
+.idea/
+
+# Playwright / browser session data
+whatsapp_session/
+
+# Environment variables
+.env
+.env.*
+
+# Logs and temporary files
+*.log
+*.pot
+*.pyre
+
+# OS files
+.DS_Store
+Thumbs.db
+
