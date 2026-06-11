@@ -131,6 +131,11 @@ async def _check_session_alive(page) -> None:
             "Sessão do WhatsApp foi desconectada.\n"
             "  Apague './whatsapp_session/' e execute novamente."
         )
+    if _WHATSAPP_URL not in page.url:
+        raise SessionRevokedError(
+            f"Página saiu do WhatsApp Web (URL: {page.url}).\n"
+            "  Apague './whatsapp_session/' e execute novamente."
+        )
 
 async def _get_all_group_names(page) -> list[str]:
     try:
@@ -144,12 +149,26 @@ async def _get_all_group_names(page) -> list[str]:
     except Exception:
         return []
 
+_CONV_PANEL_SELECTOR = (
+    'div[data-testid="conversation-panel-messages"], '
+    'div.copyable-area'
+)
+
+
+async def _wait_conv_panel(page) -> None:
+    """Aguarda o painel de mensagens aparecer; fallback para sleep se não achar."""
+    try:
+        await page.wait_for_selector(_CONV_PANEL_SELECTOR, timeout=6000)
+    except Exception:
+        await page.wait_for_timeout(1500)
+
+
 async def _open_group(page, group_name: str) -> None:
     """Abre o grupo. Levanta GroupNotFoundError com sugestões se não achar."""
     group_el = await page.query_selector(f'span[title="{group_name}"]')
     if group_el:
         await group_el.click()
-        await page.wait_for_timeout(1000)
+        await _wait_conv_panel(page)
         return
 
     for selector in _SEARCH_INPUT_SELECTORS:
@@ -163,7 +182,7 @@ async def _open_group(page, group_name: str) -> None:
             result = await page.query_selector(f'span[title="{group_name}"]')
             if result:
                 await result.click()
-                await page.wait_for_timeout(1000)
+                await _wait_conv_panel(page)
                 return
 
             all_names = await _get_all_group_names(page)
@@ -181,6 +200,16 @@ async def _scroll_to_bottom(page) -> None:
             return
         except Exception:
             continue
+    # Fallback se os seletores principais falharem (WhatsApp atualizou data-testid)
+    try:
+        await page.evaluate("""
+            [
+                ...document.querySelectorAll('[data-testid="conversation-panel-messages"]'),
+                ...document.querySelectorAll('.copyable-area'),
+            ].forEach(el => { el.scrollTop = el.scrollHeight; });
+        """)
+    except Exception:
+        pass
 
 # ── Helpers: detecção de link ──────────────────────────────────────────────────
 
@@ -194,21 +223,17 @@ async def _get_all_visible_texts(page) -> list[str]:
     except Exception:
         return []
 
+# ── Modificação na função _is_today ──────────────────────────────────────────
+
 def _is_today(timestamp_str: str) -> bool:
     """
     Verifica se um timestamp do WhatsApp Web corresponde a hoje.
 
-    O WhatsApp exibe timestamps em formatos variados:
-      - Mensagem do dia:        "14:53"         → apenas hora → é hoje
-      - Mensagem de ontem:      "ontem"         → não é hoje
-      - Mensagem desta semana:  "segunda-feira" → não é hoje
-      - Mensagem mais antiga:   "12/05/2025"    → não é hoje
-
-    Estratégia: se a string contém apenas dígitos e ":" (ex: "14:53"),
-    é uma mensagem de hoje. Qualquer outro formato é de outro dia.
+    A lógica foi invertida para segurança (Modo Sniper):
+    Sem timestamp ou timestamp inválido -> Retorna False (Assume antigo).
     """
     if not timestamp_str:
-        return True  # sem timestamp → não penaliza, deixa passar
+        return False  # ← MODIFICADO: Sem confirmação, assume que NÃO é de hoje.
 
     ts = timestamp_str.strip().lower()
 
@@ -219,71 +244,89 @@ def _is_today(timestamp_str: str) -> bool:
     # Qualquer outro formato (ontem, seg., dd/mm/aaaa, etc.) → outro dia
     return False
 
+
+# ── Modificação na função _find_new_forms_link ─────────────────────────────────
+
 async def _find_new_forms_link(page) -> str | None:
     """
     Busca um link de formulário válido nas mensagens visíveis.
-
-    Duas condições para processar o link:
-      1. A mensagem contém "cabine" (case-insensitive) — filtra outros formulários.
-      2. O timestamp é de hoje (formato HH:MM) — filtra links de dias anteriores.
-
-    Por que buscar no container da mensagem e não só no elemento do link:
-    O WhatsApp Web renderiza o preview num bloco separado do texto original —
-    verificar o container pai garante que "cabine" seja detectado mesmo quando
-    o link está num elemento irmão.
+    Lógica corrigida para evitar falsos positivos de mensagens sem timestamp.
     """
-    # Estratégia 1: tags <a> — mais confiável
+    
+    # Script injetado no navegador modificado para capturar fallbacks de hora
+    # caso o data-pre-plain-text suma devido ao scroll.
+    _JS_EXTRACTOR = """els => els.map(e => {
+        const container = e.closest('[data-testid="msg-container"], .copyable-area, div.copyable-text');
+        
+        // Tenta 1: Atributo padrão copyable-text
+        let ts = container?.querySelector('[data-pre-plain-text]')?.getAttribute('data-pre-plain-text') ?? '';
+        
+        // Tenta 2: Fallback se o data-pre-plain-text sumiu, busca o textinho da hora impresso na bolha
+        if (!ts && container) {
+            // No WhatsApp Web atual, a hora fica em span[data-testid="msg-time"] ou span[dir="auto"]
+            const timeEl = container.querySelector('span[data-testid="msg-time"]')
+                           || (() => {
+                               const spans = Array.from(container.querySelectorAll('span[dir="auto"]'));
+                               return spans.find(s => /^\\d{1,2}:\\d{2}$/.test(s.innerText.trim())) || null;
+                           })();
+            if (timeEl && /^\\d{1,2}:\\d{2}$/.test(timeEl.innerText.trim())) {
+                ts = timeEl.innerText.trim();
+            }
+        }
+        
+        return {
+            href: e.href || e.getAttribute('data-url') || '',
+            context: container?.innerText ?? '',
+            timestamp: ts
+        };
+    })"""
+
+    # Estratégia 1: tags <a>
     try:
         entries = await page.eval_on_selector_all(
             'a[href*="docs.google.com/forms"], a[href*="forms.gle"]',
-            """els => els.map(e => {
-                const container = e.closest('[data-testid="msg-container"], .copyable-area, div.copyable-text');
-                return {
-                    href: e.href,
-                    context: container?.innerText ?? '',
-                    timestamp: container?.querySelector('[data-pre-plain-text]')
-                                ?.getAttribute('data-pre-plain-text') ?? ''
-                };
-            })""",
+            _JS_EXTRACTOR,
         )
         for entry in reversed(entries):
             href = entry.get("href", "")
             ctx  = entry.get("context", "")
             ts   = entry.get("timestamp", "")
-            # Extrai "HH:MM" do data-pre-plain-text "[HH:MM, DD/MM/AAAA] Nome:"
-            ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
-            ts_clean = ts_match.group(1) if ts_match else ts
+            
+            # Se já veio só a hora do Fallback 2, joga direto, senão extrai do regex
+            if ":" in ts and "[" not in ts:
+                ts_clean = ts
+            else:
+                ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
+                ts_clean = ts_match.group(1) if ts_match else ""
+
             if href and _KEYWORD_PATTERN.search(ctx) and _is_today(ts_clean):
                 return href
     except Exception:
         pass
 
-    # Estratégia 2: data-url
+    # Estratégia 2: data-url (Previews de links)
     try:
         entries = await page.eval_on_selector_all(
             'span[data-url*="docs.google.com/forms"], span[data-url*="forms.gle"]',
-            """els => els.map(e => {
-                const container = e.closest('[data-testid="msg-container"], .copyable-area, div.copyable-text');
-                return {
-                    href: e.getAttribute('data-url'),
-                    context: container?.innerText ?? '',
-                    timestamp: container?.querySelector('[data-pre-plain-text]')
-                                ?.getAttribute('data-pre-plain-text') ?? ''
-                };
-            })""",
+            _JS_EXTRACTOR,
         )
         for entry in reversed(entries):
             href = entry.get("href") or ""
             ctx  = entry.get("context", "")
             ts   = entry.get("timestamp", "")
-            ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
-            ts_clean = ts_match.group(1) if ts_match else ts
+            
+            if ":" in ts and "[" not in ts:
+                ts_clean = ts
+            else:
+                ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
+                ts_clean = ts_match.group(1) if ts_match else ""
+
             if href and _KEYWORD_PATTERN.search(ctx) and _is_today(ts_clean):
                 return href
     except Exception:
         pass
 
-    # Estratégia 3: regex no texto + timestamp via data-pre-plain-text (fallback)
+    # Estratégia 3: Regex puro no texto (Fallback do Fallback)
     try:
         entries = await page.eval_on_selector_all(
             'div.copyable-text[data-pre-plain-text], div.copyable-text, div._21Ahp, span.selectable-text',
@@ -300,7 +343,7 @@ async def _find_new_forms_link(page) -> str | None:
             if match:
                 href = match.group(0)
                 ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
-                ts_clean = ts_match.group(1) if ts_match else ts
+                ts_clean = ts_match.group(1) if ts_match else "" # ← MODIFICADO: string vazia em vez de retransmitir ts
                 if href and _KEYWORD_PATTERN.search(text) and _is_today(ts_clean):
                     return href
     except Exception:
@@ -336,7 +379,8 @@ async def run_monitor(browser: BrowserContext) -> None:
         f"{whatsapp_cfg.hora_fim} (a cada {whatsapp_cfg.intervalo_scan}s)...")
 
     attempts = 0
-    SESSION_CHECK_EVERY = 20
+    pre_window_checks = 0
+    SESSION_CHECK_EVERY = 5   # verifica sessão a cada ~15s (5 × 3s intervalo_scan)
 
     while True:
         now = _now_hhmm()
@@ -350,6 +394,9 @@ async def run_monitor(browser: BrowserContext) -> None:
             )
 
         if now < whatsapp_cfg.hora_inicio:
+            pre_window_checks += 1
+            if pre_window_checks % 4 == 0:  # a cada ~2min (4 × 30s) — detecta logout antes do horário
+                await _check_session_alive(page)
             await asyncio.sleep(30)
             continue
 

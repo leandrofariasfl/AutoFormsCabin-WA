@@ -99,7 +99,22 @@ async def get_browser() -> AsyncGenerator[BrowserContext, None]:
                 browser = await playwright.chromium.launch_persistent_context(
                     user_data_dir=whatsapp_cfg.session_dir,
                     headless=False,
-                    args=["--start-maximized"],
+                    args=[
+                        "--start-maximized",
+                        # Remove sinais que o Google usa para detectar automação
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                    ],
+                    # User agent de Chrome real (sem "HeadlessChrome" ou "Playwright")
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    # Remove a propriedade navigator.webdriver do JS
+                    # (principal flag que o Google verifica)
+                    ignore_default_args=["--enable-automation"],
                 )
             except Exception as e:
                 raise BrowserError(
@@ -107,6 +122,14 @@ async def get_browser() -> AsyncGenerator[BrowserContext, None]:
                     f"  Detalhe: {e}\n"
                     f"  Tente: python -m playwright install chromium"
                 ) from e
+
+            # Remove navigator.webdriver em TODAS as páginas abertas pelo browser
+            # Essa propriedade é o principal sinal que o Google usa para detectar automação
+            await browser.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
 
             # Garante sessão Google antes de qualquer coisa
             await _ensure_google_logged_in(browser)

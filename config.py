@@ -11,20 +11,20 @@ class FormData:
     """Dados pessoais para preenchimento do formulário."""
     nome: str      = "Nome"
     sobrenome: str = "Sobrenome"
-    whatsapp: str  = "7999999999"
-    turma: str     = "OS 01"
+    whatsapp: str  = "79999999999"
+    turma: str     = "TURMA01"
     cabine: str    = "16"
 
     # Lista de cabines de fallback: se a cabine principal não estiver
     # disponível no dropdown, tenta as seguintes em ordem.
-    cabines_fallback: tuple[str, ...] = ("15", "17", "18", "14")
+    cabines_fallback: tuple[str, ...] = ("15", "17", "18", "14", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40")
 
 
 @dataclass(frozen=True)
 class WhatsAppConfig:
     """Configurações do monitoramento do WhatsApp Web."""
-    grupo: str            = "TURMA 01"  # <- nome EXATO do grupo
-    hora_inicio: str      = "12:45"
+    grupo: str            = "TURMA"  # <- nome EXATO do grupo
+    hora_inicio: str      = "12:43"
     hora_fim: str         = "13:10"
     session_dir: str      = "./whatsapp_session"
     intervalo_scan: float = 3.0    # segundos entre verificações
@@ -46,7 +46,7 @@ class AppConfig:
     """Configurações gerais da aplicação."""
     # True  = preenche mas NÃO envia (modo teste)
     # False = preenche e ENVIA de verdade
-    apenas_preencher: bool = True
+    apenas_preencher: bool = False
 
 # ── Instâncias prontas para importar ──────────────────────────────────────────
 form_data    = FormData()

@@ -34,6 +34,10 @@ _DROPDOWN_SELECTORS = (
     'div.MocG8c',
 )
 
+_RADIO_SELECTORS = (
+    'div[role="radiogroup"]',
+)
+
 _SUBMIT_SELECTORS = (
     'div[role="button"][jsname="M2UYVd"]',
     'div[role="button"]:has-text("Enviar")',
@@ -106,16 +110,28 @@ async def _select_option(page: Page, dropdown: ElementHandle, value: str) -> boo
 
 async def _select_with_fallback(page: Page, dropdown: ElementHandle, field: str) -> str | None:
     """
-    Tenta selecionar a cabine preferida; se não encontrar, percorre a lista
-    de fallback em ordem. Retorna o valor selecionado ou None se nenhum serviu.
+    Abre o dropdown UMA VEZ, captura todas as opções e itera os candidatos em memória.
+    Evita ciclos de abrir/fechar para cada candidato — cada segundo importa.
     """
+    await dropdown.click()
+    await page.wait_for_timeout(600)
+
+    options = await page.query_selector_all('div[role="option"]')
+    option_texts: list[tuple[str, ElementHandle]] = []
+    for opt in options:
+        text = (await opt.inner_text()).strip()
+        option_texts.append((text, opt))
+
     candidates = [form_data.cabine] + list(form_data.cabines_fallback)
     for candidate in candidates:
-        ok = await _select_option(page, dropdown, candidate)
-        if ok:
-            if candidate != form_data.cabine:
-                log(f"  ⚠️  Cabine {form_data.cabine} indisponível — usando fallback: {candidate}")
-            return candidate
+        for text, opt in option_texts:
+            if candidate.lower() in text.lower():
+                await opt.click()
+                if candidate != form_data.cabine:
+                    log(f"  ⚠️  Cabine {form_data.cabine} indisponível — usando fallback: {candidate}")
+                return candidate
+
+    await page.keyboard.press("Escape")
     return None
 
 
@@ -146,21 +162,25 @@ async def _check_form_accessible(page: Page, url: str) -> None:
 
 async def _verify_submission(page: Page) -> bool:
     """
-    Verifica se o formulário foi enviado com sucesso checando
-    a URL e o conteúdo da página pós-envio.
+    Aguarda ATIVAMENTE até 10s pela confirmação do envio (URL ou texto).
+    Substitui sleep fixo de 2s — evita falso SubmitError em servidores lentos.
     """
-    await page.wait_for_timeout(2000)
-    url = page.url
-    content = await page.content()
-
-    success_signals = [
-        "formResponse",
-        "Sua resposta foi registrada",
-        "Your response has been recorded",
-        "Obrigado",
-        "Thanks",
-    ]
-    return any(s.lower() in content.lower() or s in url for s in success_signals)
+    try:
+        await page.wait_for_function(
+            """() => {
+                const url  = window.location.href;
+                const text = document.body?.innerText || '';
+                return url.includes('formResponse')
+                    || text.includes('Sua resposta foi registrada')
+                    || text.includes('Your response has been recorded')
+                    || text.includes('Obrigado')
+                    || text.includes('Thanks');
+            }""",
+            timeout=10000,
+        )
+        return True
+    except Exception:
+        return False
 
 
 # ── Interface pública ──────────────────────────────────────────────────────────
@@ -173,12 +193,20 @@ async def fill_form(page: Page, url: str) -> None:
     log(f"Abrindo formulário: {url}")
 
     try:
-        await page.goto(url, wait_until="networkidle", timeout=retry_cfg.timeout_formulario * 1000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=retry_cfg.timeout_formulario * 1000)
     except Exception as e:
         await _save_screenshot(page, "erro_carregar_forms")
         raise FormClosedError(f"Timeout ao carregar o formulário: {e}") from e
 
-    await page.wait_for_timeout(1500)
+    # Aguarda os campos aparecerem — mais confiável que sleep fixo + networkidle
+    try:
+        await page.wait_for_selector(
+            'div[role="listitem"]',
+            timeout=retry_cfg.timeout_formulario * 1000,
+        )
+    except Exception:
+        pass  # _check_form_accessible detectará o estado real abaixo
+
     await _check_form_accessible(page, url)
 
     groups = await page.query_selector_all('div[role="listitem"]')
@@ -209,6 +237,14 @@ async def fill_form(page: Page, url: str) -> None:
         dropdown = await _find_first(group, _DROPDOWN_SELECTORS)
         if dropdown:
             result = await _fill_dropdown(page, dropdown, title, title_lower)
+            if result:
+                filled.add(result)
+            continue
+
+        # ── Radio Group ──────────────────────────────────────────────────────
+        radio_group = await _find_first(group, _RADIO_SELECTORS)
+        if radio_group:
+            result = await _fill_radio_group(page, radio_group, title, title_lower)
             if result:
                 filled.add(result)
             continue
@@ -270,6 +306,60 @@ async def _fill_dropdown(page: Page, dropdown: ElementHandle, title: str, title_
     else:
         log(f"  ⚠️  Dropdown não mapeado: '{title}'")
         return None
+
+
+async def _select_radio(radio_group: ElementHandle, value: str) -> bool:
+    """Clica no radio button que contém `value`. Retorna True se achou."""
+    options = await radio_group.query_selector_all('div[role="radio"]')
+    for option in options:
+        text = (await option.inner_text()).strip()
+        if value.lower() in text.lower():
+            await option.click()
+            return True
+    return False
+
+
+async def _select_radio_with_fallback(radio_group: ElementHandle) -> str | None:
+    """
+    Lê TODAS as opções de radio de uma vez e escolhe a melhor cabine.
+    Sem abrir/fechar nada — direto ao clique.
+    """
+    options = await radio_group.query_selector_all('div[role="radio"]')
+    option_texts: list[tuple[str, ElementHandle]] = []
+    for opt in options:
+        text = (await opt.inner_text()).strip()
+        option_texts.append((text, opt))
+
+    candidates = [form_data.cabine] + list(form_data.cabines_fallback)
+    for candidate in candidates:
+        for text, opt in option_texts:
+            if candidate.lower() in text.lower():
+                await opt.click()
+                if candidate != form_data.cabine:
+                    log(f"  ⚠️  Cabine {form_data.cabine} indisponível — usando fallback radio: {candidate}")
+                return candidate
+    return None
+
+
+async def _fill_radio_group(page: Page, radio_group: ElementHandle, title: str, title_lower: str) -> str | None:
+    """Seleciona opção em radio group. Retorna a chave do campo preenchido ou None."""
+    if "turma" in title_lower:
+        ok = await _select_radio(radio_group, form_data.turma)
+        if ok:
+            log(f"  ✓ Turma (radio): '{form_data.turma}'")
+            return "turma"
+        log(f"  ⚠️  Turma '{form_data.turma}' não encontrada nos radio buttons")
+        return None
+    if "cabine" in title_lower:
+        selected = await _select_radio_with_fallback(radio_group)
+        if selected:
+            log(f"  ✓ Cabine (radio): '{selected}'")
+            return "cabine"
+        log(f"  ⚠️  Nenhuma cabine do fallback disponível nos radio buttons")
+        await _save_screenshot(page, "cabine_radio_indisponivel")
+        return None
+    log(f"  ⚠️  Radio group não mapeado: '{title}'")
+    return None
 
 
 async def _submit(page: Page) -> None:
