@@ -4,7 +4,7 @@ core/monitor.py — Monitoramento do WhatsApp Web.
 Proteção contra links indesejados (duas camadas):
   1. Filtro "cabine": só age se a mensagem contiver a palavra "cabine".
                       Evita reagir a outros formulários no grupo.
-  2. Filtro de data: só age se o timestamp for de hoje (formato HH:MM).
+  2. Filtro de data: só age se o data-pre-plain-text contiver DD/MM/AAAA de hoje.
                      Elimina links de dias anteriores com certeza.
 
 Exceções tratadas:
@@ -17,7 +17,7 @@ Exceções tratadas:
 import asyncio
 import difflib
 import re
-from datetime import datetime
+from datetime import date, datetime
 
 from playwright.async_api import BrowserContext
 
@@ -229,20 +229,24 @@ def _is_today(timestamp_str: str) -> bool:
     """
     Verifica se um timestamp do WhatsApp Web corresponde a hoje.
 
-    A lógica foi invertida para segurança (Modo Sniper):
-    Sem timestamp ou timestamp inválido -> Retorna False (Assume antigo).
+    Exige data confirmada no formato DD/MM/AAAA (presente no data-pre-plain-text).
+    Apenas HH:MM sem data → False (não é possível confirmar o dia).
     """
     if not timestamp_str:
-        return False  # ← MODIFICADO: Sem confirmação, assume que NÃO é de hoje.
+        return False
 
-    ts = timestamp_str.strip().lower()
+    date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})', timestamp_str)
+    if not date_match:
+        return False
 
-    # Formato "HH:MM" ou "H:MM" → mensagem de hoje
-    if re.match(r'^\d{1,2}:\d{2}$', ts):
-        return True
-
-    # Qualquer outro formato (ontem, seg., dd/mm/aaaa, etc.) → outro dia
-    return False
+    try:
+        parts = date_match.group(1).split('/')
+        day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+        if year < 100:
+            year += 2000
+        return date(year, month, day) == date.today()
+    except (ValueError, IndexError):
+        return False
 
 
 # ── Modificação na função _find_new_forms_link ─────────────────────────────────
@@ -253,33 +257,33 @@ async def _find_new_forms_link(page) -> str | None:
     Lógica corrigida para evitar falsos positivos de mensagens sem timestamp.
     """
     
-    # Script injetado no navegador modificado para capturar fallbacks de hora
-    # caso o data-pre-plain-text suma devido ao scroll.
+    # Só processa links dentro de bolhas de mensagens enviadas (msg-container).
+    # Isso evita capturar previews gerados enquanto alguém ainda está digitando.
     _JS_EXTRACTOR = """els => els.map(e => {
-        const container = e.closest('[data-testid="msg-container"], .copyable-area, div.copyable-text');
-        
+        const msgContainer = e.closest('[data-testid="msg-container"]');
+        if (!msgContainer) return null;  // ignora links fora de mensagens enviadas
+
         // Tenta 1: Atributo padrão copyable-text
-        let ts = container?.querySelector('[data-pre-plain-text]')?.getAttribute('data-pre-plain-text') ?? '';
-        
-        // Tenta 2: Fallback se o data-pre-plain-text sumiu, busca o textinho da hora impresso na bolha
-        if (!ts && container) {
-            // No WhatsApp Web atual, a hora fica em span[data-testid="msg-time"] ou span[dir="auto"]
-            const timeEl = container.querySelector('span[data-testid="msg-time"]')
+        let ts = msgContainer.querySelector('[data-pre-plain-text]')?.getAttribute('data-pre-plain-text') ?? '';
+
+        // Tenta 2: Hora impressa na bolha (quando data-pre-plain-text sumiu por scroll)
+        if (!ts) {
+            const timeEl = msgContainer.querySelector('span[data-testid="msg-time"]')
                            || (() => {
-                               const spans = Array.from(container.querySelectorAll('span[dir="auto"]'));
+                               const spans = Array.from(msgContainer.querySelectorAll('span[dir="auto"]'));
                                return spans.find(s => /^\\d{1,2}:\\d{2}$/.test(s.innerText.trim())) || null;
                            })();
             if (timeEl && /^\\d{1,2}:\\d{2}$/.test(timeEl.innerText.trim())) {
                 ts = timeEl.innerText.trim();
             }
         }
-        
+
         return {
             href: e.href || e.getAttribute('data-url') || '',
-            context: container?.innerText ?? '',
+            context: msgContainer.innerText ?? '',
             timestamp: ts
         };
-    })"""
+    }).filter(Boolean)"""
 
     # Estratégia 1: tags <a>
     try:
@@ -291,15 +295,7 @@ async def _find_new_forms_link(page) -> str | None:
             href = entry.get("href", "")
             ctx  = entry.get("context", "")
             ts   = entry.get("timestamp", "")
-            
-            # Se já veio só a hora do Fallback 2, joga direto, senão extrai do regex
-            if ":" in ts and "[" not in ts:
-                ts_clean = ts
-            else:
-                ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
-                ts_clean = ts_match.group(1) if ts_match else ""
-
-            if href and _KEYWORD_PATTERN.search(ctx) and _is_today(ts_clean):
+            if href and _KEYWORD_PATTERN.search(ctx) and _is_today(ts):
                 return href
     except Exception:
         pass
@@ -314,14 +310,7 @@ async def _find_new_forms_link(page) -> str | None:
             href = entry.get("href") or ""
             ctx  = entry.get("context", "")
             ts   = entry.get("timestamp", "")
-            
-            if ":" in ts and "[" not in ts:
-                ts_clean = ts
-            else:
-                ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
-                ts_clean = ts_match.group(1) if ts_match else ""
-
-            if href and _KEYWORD_PATTERN.search(ctx) and _is_today(ts_clean):
+            if href and _KEYWORD_PATTERN.search(ctx) and _is_today(ts):
                 return href
     except Exception:
         pass
@@ -338,13 +327,10 @@ async def _find_new_forms_link(page) -> str | None:
         for entry in reversed(entries):
             text = entry.get("text", "")
             ts   = entry.get("timestamp", "")
-            clean = text.replace("\n", "").replace("\r", "")
-            match = _FORMS_PATTERN.search(clean)
+            match = _FORMS_PATTERN.search(text)  # busca no texto original para não concatenar URL com palavra seguinte
             if match:
                 href = match.group(0)
-                ts_match = re.search(r'\[(\d{1,2}:\d{2})', ts)
-                ts_clean = ts_match.group(1) if ts_match else "" # ← MODIFICADO: string vazia em vez de retransmitir ts
-                if href and _KEYWORD_PATTERN.search(text) and _is_today(ts_clean):
+                if href and _KEYWORD_PATTERN.search(text) and _is_today(ts):
                     return href
     except Exception:
         pass
