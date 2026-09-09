@@ -1,10 +1,10 @@
-# 🗂 Reserva Automática de Cabine de Estudo
+# Reserva Automática de Cabine de Estudo
 
 > Automação em Python + Playwright que monitora um grupo do WhatsApp Web, captura o link do Google Forms no momento em que é postado e preenche o formulário de reserva de cabine de estudo em milissegundos — garantindo vaga mesmo em alta concorrência.
 
 ---
 
-## 🚀 Sobre o Projeto & Motivação
+## Sobre o Projeto & Motivação
 
 Este script foi criado para resolver um problema real e frustrante: **cabines de estudo disputadas por dezenas de alunos ao mesmo tempo**, onde quem clica mais rápido ganha a vaga.
 
@@ -16,14 +16,14 @@ Este projeto elimina completamente esse problema. O script fica de plantão moni
 
 ---
 
-## 🏗️ Arquitetura e Estrutura do Projeto
+## Arquitetura e Estrutura do Projeto
 
 ```
 reserva_cabine/
 │
 ├── main.py                  # Entrypoint. Orquestra o fluxo e trata todas as exceções
 │
-├── config.py                # ⚙️  ÚNICO arquivo que você precisa editar
+├── config.py                # ÚNICO arquivo que você precisa editar
 │
 ├── core/
 │   ├── browser.py           # Ciclo de vida do Chromium (sessão persistente, anti-detecção)
@@ -52,7 +52,7 @@ reserva_cabine/
 
 ---
 
-## 🛠️ Pré-requisitos e Instalação
+## Pré-requisitos e Instalação
 
 **Requisitos:** Python 3.11+
 
@@ -91,7 +91,7 @@ python -m playwright install chromium
 
 ---
 
-## ⚙️ Configuração (`config.py`)
+## Configuração (`config.py`)
 
 Todo o comportamento do script é controlado por **um único arquivo**: `config.py`. Você nunca precisará tocar em `main.py` ou nos arquivos da pasta `core/`.
 
@@ -171,7 +171,7 @@ class AppConfig:
 
 ---
 
-## 🔄 Fluxo de Execução Diário
+## Fluxo de Execução Diário
 
 ### Execução
 
@@ -228,7 +228,7 @@ O script possui duas camadas de proteção para garantir que **nunca reaja a um 
 
 ---
 
-## 🛡️ Tratamento de Erros, Resiliência e Diagnóstico
+## Tratamento de Erros, Resiliência e Diagnóstico
 
 O projeto utiliza uma hierarquia de exceções tipadas. Cada erro produz uma mensagem clara no terminal com a causa e a ação corretiva.
 
@@ -264,7 +264,7 @@ Para desativar, defina `salvar_screenshot = False` em `RetryConfig` no `config.p
 
 ---
 
-## 🔐 Notas de Segurança
+## Notas de Segurança
 
 - O arquivo `config.py` contém seu número de WhatsApp. Ele está no `.gitignore` — **não faça commit desse arquivo** em repositórios públicos.
 - A pasta `whatsapp_session/` contém tokens de sessão ativos do WhatsApp e Google. Ela também está no `.gitignore`.
@@ -272,7 +272,7 @@ Para desativar, defina `salvar_screenshot = False` em `RetryConfig` no `config.p
 
 ---
 
-## 📋 Resumo de Comandos
+## Resumo de Comandos
 
 ```bash
 # Instalar dependências
